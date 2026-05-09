@@ -1,4 +1,4 @@
-﻿Imports System.Drawing.Imaging
+Imports System.Drawing.Imaging
 Imports System.IO
 Imports System.Runtime.CompilerServices
 Imports System.Text.RegularExpressions
@@ -1210,6 +1210,444 @@ Public Class PSClassicsfPKGBuilder
 
         End If
 
+    End Sub
+
+#End Region
+
+#Region "PS4 App"
+
+    Private Sub AppendPS4Log(Message As String)
+        Dispatcher.Invoke(Sub()
+                              PS4BuildLogTextBox.AppendText("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + Message + vbCrLf)
+                              PS4BuildLogTextBox.ScrollToEnd()
+                          End Sub)
+    End Sub
+
+    Private Sub ClearPS4LogButton_Click(sender As Object, e As RoutedEventArgs) Handles ClearPS4LogButton.Click
+        PS4BuildLogTextBox.Clear()
+    End Sub
+
+    Private Sub BrowsePS4IconButton_Click(sender As Object, e As RoutedEventArgs) Handles BrowsePS4IconButton.Click
+        Dim OFD As New OpenFileDialog() With {.Title = "Select a PNG icon file.", .Multiselect = False, .Filter = "PNG (*.png)|*.png"}
+        If OFD.ShowDialog() = Forms.DialogResult.OK Then
+            SelectedPS4IconTextBox.Text = OFD.FileName
+        End If
+    End Sub
+
+    Private Sub BrowsePS4BGButton_Click(sender As Object, e As RoutedEventArgs) Handles BrowsePS4BGButton.Click
+        Dim OFD As New OpenFileDialog() With {.Title = "Select a PNG background file.", .Multiselect = False, .Filter = "PNG (*.png)|*.png"}
+        If OFD.ShowDialog() = Forms.DialogResult.OK Then
+            SelectedPS4BGTextBox.Text = OFD.FileName
+        End If
+    End Sub
+
+    Private Sub BrowsePS4AppFolderButton_Click(sender As Object, e As RoutedEventArgs) Handles BrowsePS4AppFolderButton.Click
+        Dim FBD As New FolderBrowserDialog() With {.Description = "Select the PS4 app content folder (must contain sce_sys)"}
+        If FBD.ShowDialog() = Forms.DialogResult.OK Then
+            SelectedPS4AppFolderTextBox.Text = FBD.SelectedPath
+            SelectedPS4GP4TextBox.Text = ""
+        End If
+    End Sub
+
+    Private Sub BrowsePS4GP4Button_Click(sender As Object, e As RoutedEventArgs) Handles BrowsePS4GP4Button.Click
+        Dim OFD As New OpenFileDialog() With {.Title = "Select a GP4 project file.", .Multiselect = False, .Filter = "GP4 (*.gp4)|*.gp4"}
+        If OFD.ShowDialog() = Forms.DialogResult.OK Then
+            SelectedPS4GP4TextBox.Text = OFD.FileName
+            SelectedPS4AppFolderTextBox.Text = ""
+        End If
+    End Sub
+
+    Private Sub BrowsePS4ToolchainButton_Click(sender As Object, e As RoutedEventArgs) Handles BrowsePS4ToolchainButton.Click
+        Dim FBD As New FolderBrowserDialog() With {.Description = "Select the OpenOrbis SDK root folder (contains /bin, /include, /lib)"}
+        If FBD.ShowDialog() = Forms.DialogResult.OK Then
+            PS4ToolchainPathTextBox.Text = FBD.SelectedPath
+        End If
+    End Sub
+
+    Private Sub BrowsePS4SourceButton_Click(sender As Object, e As RoutedEventArgs) Handles BrowsePS4SourceButton.Click
+        Dim FBD As New FolderBrowserDialog() With {.Description = "Select the source folder containing .c files"}
+        If FBD.ShowDialog() = Forms.DialogResult.OK Then
+            PS4SourceFolderTextBox.Text = FBD.SelectedPath
+        End If
+    End Sub
+
+    Private Function CompilePS4Source() As Boolean
+        Dim ToolchainPath As String = PS4ToolchainPathTextBox.Text
+        Dim SourceFolder As String = PS4SourceFolderTextBox.Text
+
+        If String.IsNullOrEmpty(ToolchainPath) Then
+            AppendPS4Log("ERROR: OpenOrbis SDK path not set.")
+            Return False
+        End If
+
+        If Not Directory.Exists(ToolchainPath + "\bin") Then
+            AppendPS4Log("ERROR: Invalid SDK path - \bin directory not found.")
+            Return False
+        End If
+
+        If String.IsNullOrEmpty(SourceFolder) OrElse Not Directory.Exists(SourceFolder) Then
+            AppendPS4Log("ERROR: Source folder not set or does not exist.")
+            Return False
+        End If
+
+        Dim SourceFiles As String() = Directory.GetFiles(SourceFolder, "*.c")
+        If SourceFiles.Length = 0 Then
+            AppendPS4Log("ERROR: No .c source files found in " + SourceFolder)
+            Return False
+        End If
+
+        AppendPS4Log("Found " + SourceFiles.Length.ToString() + " source file(s) to compile.")
+
+        Dim ClangPath As String = ToolchainPath + "\bin\windows\x86_64\clang.exe"
+        If Not File.Exists(ClangPath) Then
+            ClangPath = ToolchainPath + "\bin\linux\x86_64\clang"
+            If Not File.Exists(ClangPath) Then
+                AppendPS4Log("ERROR: clang compiler not found in SDK bin directory.")
+                Return False
+            End If
+        End If
+
+        Dim LdPath As String = ToolchainPath + "\bin\windows\x86_64\ld.lld.exe"
+        If Not File.Exists(LdPath) Then
+            LdPath = ToolchainPath + "\bin\linux\x86_64\ld.lld"
+        End If
+
+        Dim ObjDir As String = SourceFolder + "\obj"
+        If Not Directory.Exists(ObjDir) Then Directory.CreateDirectory(ObjDir)
+
+        Dim CFlags As String = "--target=x86_64-scei-ps4-elf -DORBIS -D__PS4__ " +
+            "-isystem """ + ToolchainPath + "\include"" " +
+            "-isystem """ + ToolchainPath + "\include\c++\v1"" " +
+            "-Wall -O2 -fPIC -fno-builtin -c"
+
+        Dim ObjFiles As New List(Of String)
+
+        For Each SrcFile As String In SourceFiles
+            Dim ObjFile As String = ObjDir + "\" + Path.GetFileNameWithoutExtension(SrcFile) + ".o"
+            ObjFiles.Add(ObjFile)
+
+            AppendPS4Log("Compiling: " + Path.GetFileName(SrcFile))
+
+            Dim CompileProc As New Process()
+            CompileProc.StartInfo.FileName = ClangPath
+            CompileProc.StartInfo.Arguments = CFlags + " """ + SrcFile + """ -o """ + ObjFile + """"
+            CompileProc.StartInfo.UseShellExecute = False
+            CompileProc.StartInfo.RedirectStandardOutput = True
+            CompileProc.StartInfo.RedirectStandardError = True
+            CompileProc.StartInfo.CreateNoWindow = True
+            CompileProc.Start()
+
+            Dim compOut As String = CompileProc.StandardOutput.ReadToEnd()
+            Dim compErr As String = CompileProc.StandardError.ReadToEnd()
+            CompileProc.WaitForExit()
+
+            If Not String.IsNullOrEmpty(compOut) Then AppendPS4Log(compOut.Trim())
+            If Not String.IsNullOrEmpty(compErr) Then
+                For Each errLine As String In compErr.Split(New String() {vbCrLf}, StringSplitOptions.RemoveEmptyEntries)
+                    AppendPS4Log("  " + errLine)
+                Next
+            End If
+
+            If CompileProc.ExitCode <> 0 Then
+                AppendPS4Log("ERROR: Compilation failed for " + Path.GetFileName(SrcFile) + " (exit code " + CompileProc.ExitCode.ToString() + ")")
+                Return False
+            End If
+
+            AppendPS4Log("  OK -> " + Path.GetFileName(ObjFile))
+        Next
+
+        AppendPS4Log("Linking eboot ELF...")
+        Dim LdFlags As String = "-m elf_x86_64 -pie --script """ + ToolchainPath + "\link.x"" --eh-frame-hdr " +
+            "-L""" + ToolchainPath + "\lib"" " +
+            "-lc -lkernel -lSceVideoOut -lScePad -lSceSysmodule -lSceUserService"
+
+        Dim ElfOutput As String = ObjDir + "\eboot.elf"
+        Dim LinkProc As New Process()
+        LinkProc.StartInfo.FileName = LdPath
+        LinkProc.StartInfo.Arguments = String.Join(" ", ObjFiles.Select(Function(f) """" + f + """")) + " " + LdFlags + " -o """ + ElfOutput + """"
+        LinkProc.StartInfo.UseShellExecute = False
+        LinkProc.StartInfo.RedirectStandardOutput = True
+        LinkProc.StartInfo.RedirectStandardError = True
+        LinkProc.StartInfo.CreateNoWindow = True
+        LinkProc.Start()
+
+        Dim linkOut As String = LinkProc.StandardOutput.ReadToEnd()
+        Dim linkErr As String = LinkProc.StandardError.ReadToEnd()
+        LinkProc.WaitForExit()
+
+        If Not String.IsNullOrEmpty(linkOut) Then AppendPS4Log(linkOut.Trim())
+        If Not String.IsNullOrEmpty(linkErr) Then AppendPS4Log("LINKER: " + linkErr.Trim())
+
+        If LinkProc.ExitCode <> 0 Then
+            AppendPS4Log("ERROR: Linking failed (exit code " + LinkProc.ExitCode.ToString() + ")")
+            Return False
+        End If
+
+        AppendPS4Log("Creating eboot.bin from ELF...")
+        Dim CreateEbootScript As String = ToolchainPath + "\bin\create-eboot.py"
+        Dim PythonPath As String = "python"
+        Dim EbootOutput As String = ""
+
+        If Not String.IsNullOrEmpty(SelectedPS4AppFolderTextBox.Text) Then
+            EbootOutput = SelectedPS4AppFolderTextBox.Text + "\eboot.bin"
+        Else
+            EbootOutput = SourceFolder + "\eboot.bin"
+        End If
+
+        Dim EbootProc As New Process()
+        EbootProc.StartInfo.FileName = PythonPath
+        EbootProc.StartInfo.Arguments = """" + CreateEbootScript + """ --paid 0x3800000000000011 """ + ElfOutput + """ """ + EbootOutput + """"
+        EbootProc.StartInfo.UseShellExecute = False
+        EbootProc.StartInfo.RedirectStandardOutput = True
+        EbootProc.StartInfo.RedirectStandardError = True
+        EbootProc.StartInfo.CreateNoWindow = True
+        EbootProc.Start()
+
+        Dim ebootOut As String = EbootProc.StandardOutput.ReadToEnd()
+        Dim ebootErr As String = EbootProc.StandardError.ReadToEnd()
+        EbootProc.WaitForExit()
+
+        If Not String.IsNullOrEmpty(ebootOut) Then AppendPS4Log(ebootOut.Trim())
+        If Not String.IsNullOrEmpty(ebootErr) Then AppendPS4Log("create-eboot: " + ebootErr.Trim())
+
+        If EbootProc.ExitCode <> 0 Then
+            AppendPS4Log("ERROR: create-eboot.py failed (exit code " + EbootProc.ExitCode.ToString() + ")")
+            Return False
+        End If
+
+        If File.Exists(EbootOutput) Then
+            Dim fi As New FileInfo(EbootOutput)
+            AppendPS4Log("SUCCESS: eboot.bin created (" + (fi.Length / 1024).ToString("N0") + " KB) -> " + EbootOutput)
+            Return True
+        Else
+            AppendPS4Log("ERROR: eboot.bin was not created.")
+            Return False
+        End If
+    End Function
+
+    Private Sub CompilePS4SourceButton_Click(sender As Object, e As RoutedEventArgs) Handles CompilePS4SourceButton.Click
+        PS4BuildLogTextBox.Clear()
+        AppendPS4Log("=== OpenOrbis Compilation ===")
+        Dim result As Boolean = CompilePS4Source()
+        If result Then
+            AppendPS4Log("=== Compilation complete ===")
+        Else
+            AppendPS4Log("=== Compilation FAILED - see errors above ===")
+        End If
+    End Sub
+
+    Private Sub BuildPS4AppfPKGButton_Click(sender As Object, e As RoutedEventArgs) Handles BuildPS4AppfPKGButton.Click
+
+        PS4BuildLogTextBox.Clear()
+        AppendPS4Log("Starting PS4 App fPKG build process...")
+
+        If PS4AutoCompileCheckBox.IsChecked AndAlso Not String.IsNullOrEmpty(PS4SourceFolderTextBox.Text) Then
+            AppendPS4Log("Auto-compile enabled. Compiling source first...")
+            If Not CompilePS4Source() Then
+                AppendPS4Log("ERROR: Compilation failed. PKG build aborted.")
+                Exit Sub
+            End If
+            AppendPS4Log("")
+        End If
+
+        Dim UseGP4FromFile As Boolean = Not String.IsNullOrEmpty(SelectedPS4GP4TextBox.Text)
+        Dim UseAppFolder As Boolean = Not String.IsNullOrEmpty(SelectedPS4AppFolderTextBox.Text)
+
+        If Not UseGP4FromFile AndAlso Not UseAppFolder Then
+            AppendPS4Log("ERROR: No app folder or GP4 project specified. Aborting.")
+            Exit Sub
+        End If
+
+        If Not UseGP4FromFile Then
+            If String.IsNullOrEmpty(PS4TitleTextBox.Text) Then
+                AppendPS4Log("ERROR: No title specified. Aborting.")
+                Exit Sub
+            End If
+            If String.IsNullOrEmpty(PS4TitleIDTextBox.Text) OrElse PS4TitleIDTextBox.Text.Length <> 9 Then
+                AppendPS4Log("ERROR: Title ID must be exactly 9 characters (e.g. CUSA00001). Aborting.")
+                Exit Sub
+            End If
+            If String.IsNullOrEmpty(PS4ContentIDTextBox.Text) OrElse PS4ContentIDTextBox.Text.Length <> 36 Then
+                AppendPS4Log("ERROR: Content ID must be exactly 36 characters. Aborting.")
+                Exit Sub
+            End If
+        End If
+
+        Dim FBD As New FolderBrowserDialog() With {.Description = "Select an output folder for the PKG", .ShowNewFolderButton = True}
+        If FBD.ShowDialog() <> Forms.DialogResult.OK Then
+            AppendPS4Log("Build cancelled by user.")
+            Exit Sub
+        End If
+
+        Dim PKGOutputFolder As String = FBD.SelectedPath
+        Dim GP4FilePath As String = ""
+
+        If UseGP4FromFile Then
+            GP4FilePath = SelectedPS4GP4TextBox.Text
+            AppendPS4Log("Using pre-made GP4 project: " + GP4FilePath)
+        Else
+            AppendPS4Log("Building from app folder: " + SelectedPS4AppFolderTextBox.Text)
+
+            Dim AppFolder As String = SelectedPS4AppFolderTextBox.Text
+            Dim GameCacheDirectory As String = My.Computer.FileSystem.CurrentDirectory + "\Cache\PS4App"
+
+            Try
+                If Directory.Exists(GameCacheDirectory) Then
+                    Directory.Delete(GameCacheDirectory, True)
+                End If
+                If File.Exists(My.Computer.FileSystem.CurrentDirectory + "\Cache\PS4App.gp4") Then
+                    File.Delete(My.Computer.FileSystem.CurrentDirectory + "\Cache\PS4App.gp4")
+                End If
+                Directory.CreateDirectory(GameCacheDirectory)
+                AppendPS4Log("Cache directory prepared.")
+            Catch ex As Exception
+                AppendPS4Log("ERROR: Failed to prepare cache directory - " + ex.Message)
+                Exit Sub
+            End Try
+
+            Try
+                My.Computer.FileSystem.CopyDirectory(AppFolder, GameCacheDirectory, True)
+                AppendPS4Log("App content copied to cache.")
+            Catch ex As Exception
+                AppendPS4Log("ERROR: Failed to copy app content - " + ex.Message)
+                Exit Sub
+            End Try
+
+            If Not Directory.Exists(GameCacheDirectory + "\sce_sys") Then
+                Directory.CreateDirectory(GameCacheDirectory + "\sce_sys")
+                AppendPS4Log("Created sce_sys directory.")
+            End If
+
+            If Not String.IsNullOrEmpty(SelectedPS4IconTextBox.Text) Then
+                Try
+                    Using NewFileStream As New FileStream(SelectedPS4IconTextBox.Text, FileMode.Open, FileAccess.Read)
+                        Utils.ConvertTo24bppPNG(Utils.ResizeAsImage(System.Drawing.Image.FromStream(NewFileStream), 512, 512)).Save(GameCacheDirectory + "\sce_sys\icon0.png", ImageFormat.Png)
+                    End Using
+                    AppendPS4Log("Icon set: icon0.png (512x512)")
+                Catch ex As Exception
+                    AppendPS4Log("WARNING: Failed to process icon - " + ex.Message)
+                End Try
+            End If
+
+            If Not String.IsNullOrEmpty(SelectedPS4BGTextBox.Text) Then
+                Try
+                    Using NewFileStream As New FileStream(SelectedPS4BGTextBox.Text, FileMode.Open, FileAccess.Read)
+                        Utils.ConvertTo24bppPNG(Utils.ResizeAsImage(System.Drawing.Image.FromStream(NewFileStream), 1920, 1080)).Save(GameCacheDirectory + "\sce_sys\pic0.png", ImageFormat.Png)
+                    End Using
+                    AppendPS4Log("Background set: pic0.png (1920x1080)")
+                Catch ex As Exception
+                    AppendPS4Log("WARNING: Failed to process background - " + ex.Message)
+                End Try
+            End If
+
+            Try
+                Dim NewPS4ParamSFO As New ParamSfo()
+                NewPS4ParamSFO.SetValue("APP_TYPE", SfoEntryType.Integer, "1", 4)
+                NewPS4ParamSFO.SetValue("APP_VER", SfoEntryType.Utf8, PS4AppVersionTextBox.Text, 8)
+                NewPS4ParamSFO.SetValue("ATTRIBUTE", SfoEntryType.Integer, "0", 4)
+                NewPS4ParamSFO.SetValue("CATEGORY", SfoEntryType.Utf8, "gd", 4)
+                NewPS4ParamSFO.SetValue("CONTENT_ID", SfoEntryType.Utf8, PS4ContentIDTextBox.Text, 48)
+                NewPS4ParamSFO.SetValue("DOWNLOAD_DATA_SIZE", SfoEntryType.Integer, "0", 4)
+                NewPS4ParamSFO.SetValue("FORMAT", SfoEntryType.Utf8, "obs", 4)
+                NewPS4ParamSFO.SetValue("PARENTAL_LEVEL", SfoEntryType.Integer, "5", 4)
+                NewPS4ParamSFO.SetValue("SYSTEM_VER", SfoEntryType.Integer, "0", 4)
+                NewPS4ParamSFO.SetValue("TITLE", SfoEntryType.Utf8, PS4TitleTextBox.Text, 128)
+                NewPS4ParamSFO.SetValue("TITLE_ID", SfoEntryType.Utf8, PS4TitleIDTextBox.Text, 12)
+                NewPS4ParamSFO.SetValue("VERSION", SfoEntryType.Utf8, PS4AppVersionTextBox.Text, 8)
+                File.WriteAllBytes(GameCacheDirectory + "\sce_sys\param.sfo", NewPS4ParamSFO.Serialize())
+                AppendPS4Log("PARAM.SFO created - Title: " + PS4TitleTextBox.Text + " | ID: " + PS4TitleIDTextBox.Text)
+            Catch ex As Exception
+                AppendPS4Log("ERROR: Failed to create PARAM.SFO - " + ex.Message)
+                Exit Sub
+            End Try
+
+            If PS4GenerateGP4CheckBox.IsChecked Then
+                Try
+                    AppendPS4Log("Generating GP4 project...")
+                    Dim GenGP4Process As New Process()
+                    GenGP4Process.StartInfo.FileName = My.Computer.FileSystem.CurrentDirectory + "\Tools\PS4\gengp4_patch.exe"
+                    GenGP4Process.StartInfo.Arguments = """" + GameCacheDirectory + """"
+                    GenGP4Process.StartInfo.WindowStyle = ProcessWindowStyle.Hidden
+                    GenGP4Process.StartInfo.UseShellExecute = False
+                    GenGP4Process.StartInfo.RedirectStandardOutput = True
+                    GenGP4Process.StartInfo.RedirectStandardError = True
+                    GenGP4Process.StartInfo.CreateNoWindow = True
+                    GenGP4Process.Start()
+                    Dim gp4StdOut As String = GenGP4Process.StandardOutput.ReadToEnd()
+                    Dim gp4StdErr As String = GenGP4Process.StandardError.ReadToEnd()
+                    GenGP4Process.WaitForExit()
+
+                    If Not String.IsNullOrEmpty(gp4StdOut) Then AppendPS4Log("gengp4: " + gp4StdOut.Trim())
+                    If Not String.IsNullOrEmpty(gp4StdErr) Then AppendPS4Log("gengp4 ERROR: " + gp4StdErr.Trim())
+
+                    GP4FilePath = My.Computer.FileSystem.CurrentDirectory + "\Cache\PS4App.gp4"
+
+                    If Not File.Exists(GP4FilePath) Then
+                        AppendPS4Log("ERROR: GP4 file was not generated. Check app folder structure.")
+                        Exit Sub
+                    End If
+
+                    File.WriteAllText(GP4FilePath, File.ReadAllText(GP4FilePath).Replace("<?xml version=""1.1""", "<?xml version=""1.0"""))
+                    File.WriteAllText(GP4FilePath, File.ReadAllText(GP4FilePath).Replace("<scenarios default_id=""1"">", "<scenarios default_id=""0"">"))
+                    AppendPS4Log("GP4 project generated and patched: " + GP4FilePath)
+                Catch ex As Exception
+                    AppendPS4Log("ERROR: GP4 generation failed - " + ex.Message)
+                    Exit Sub
+                End Try
+            Else
+                AppendPS4Log("ERROR: No GP4 file specified and auto-generate is disabled. Aborting.")
+                Exit Sub
+            End If
+        End If
+
+        AppendPS4Log("Starting PKG creation...")
+        AppendPS4Log("Output folder: " + PKGOutputFolder)
+
+        Try
+            Dim SkipDigestArg As String = ""
+            If PS4SkipDigestCheckBox.IsChecked Then
+                SkipDigestArg = " --skip_digest"
+            End If
+
+            Dim PKGBuilderProcess As New Process()
+            PKGBuilderProcess.StartInfo.FileName = My.Computer.FileSystem.CurrentDirectory + "\Tools\PS4\mod-pub\orbis-pub-cmd-3.38.exe"
+            PKGBuilderProcess.StartInfo.Arguments = "img_create --oformat pkg" + SkipDigestArg + " --no_progress_bar """ + GP4FilePath + """ """ + PKGOutputFolder + """"
+            PKGBuilderProcess.StartInfo.UseShellExecute = False
+            PKGBuilderProcess.StartInfo.RedirectStandardOutput = True
+            PKGBuilderProcess.StartInfo.RedirectStandardError = True
+            PKGBuilderProcess.StartInfo.CreateNoWindow = True
+
+            AppendPS4Log("Executing: orbis-pub-cmd-3.38.exe img_create ...")
+            PKGBuilderProcess.Start()
+
+            Dim stdOut As String = PKGBuilderProcess.StandardOutput.ReadToEnd()
+            Dim stdErr As String = PKGBuilderProcess.StandardError.ReadToEnd()
+            PKGBuilderProcess.WaitForExit()
+
+            If Not String.IsNullOrEmpty(stdOut) Then
+                For Each line As String In stdOut.Split(New String() {vbCrLf}, StringSplitOptions.RemoveEmptyEntries)
+                    AppendPS4Log(line)
+                Next
+            End If
+            If Not String.IsNullOrEmpty(stdErr) Then
+                For Each line As String In stdErr.Split(New String() {vbCrLf}, StringSplitOptions.RemoveEmptyEntries)
+                    AppendPS4Log("STDERR: " + line)
+                Next
+            End If
+
+            If stdOut.Contains("Create image Process finished with warning") OrElse PKGBuilderProcess.ExitCode = 0 Then
+                AppendPS4Log("SUCCESS: PKG created successfully!")
+                If MsgBox("PKG created!" + vbCrLf + "Do you want to open the output folder?", MsgBoxStyle.YesNo) = MsgBoxResult.Yes Then
+                    Process.Start("explorer", PKGOutputFolder)
+                End If
+            Else
+                AppendPS4Log("ERROR: PKG creation failed with exit code " + PKGBuilderProcess.ExitCode.ToString())
+            End If
+        Catch ex As Exception
+            AppendPS4Log("ERROR: Exception during PKG build - " + ex.Message)
+        End Try
+
+        AppendPS4Log("Build process finished.")
     End Sub
 
 #End Region
